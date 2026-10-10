@@ -18,7 +18,7 @@ Lo demás se comprueba a mano, y el script nunca lo reescribe: la edición (cont
 
 ## Requisito: el núcleo primero
 
-`biblioteca.bib` tiene dos capas. Las obras del núcleo llevan `estrato`; las del área secundaria llevan `capa = {secundaria}`, la obra del núcleo de la que cuelgan (`cuelga`), su papel (`papel`: profundización técnica, contraste y crítica, especialización aplicada, fuente original, historia y contexto o divulgación) y su estado (`estado`: curada o propuesta). La recuperación tiene que leer esos campos y cumplir cuatro reglas:
+`biblioteca.bib` tiene dos capas. Las obras del núcleo llevan `estrato`; las del área secundaria llevan `capa = {secundaria}`, la obra del núcleo de la que cuelgan (`cuelga`), su papel (`papel`: profundización técnica, contraste y crítica, especialización aplicada, fuente original, historia y contexto, divulgación o introducción) y su estado (`estado`: curada o propuesta). La recuperación tiene que leer esos campos y cumplir cuatro reglas:
 
 1. **El núcleo va primero.** Ante una consulta, los pasajes del núcleo se recuperan y se citan antes que los del área secundaria.
 2. **Lo secundario va etiquetado.** Un pasaje del área secundaria se presenta con su papel («para profundizar», «contrapeso»…) y con la obra del núcleo de la que cuelga, nunca como el consenso del pensum.
