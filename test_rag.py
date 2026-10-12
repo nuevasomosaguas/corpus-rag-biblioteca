@@ -20,7 +20,10 @@ import threading
 from pathlib import Path
 
 AQUI = Path(__file__).resolve().parent
-RELLENO = " ".join(f"palabra{i}" for i in range(120))
+# Relleno de palabras de letras, todas distintas: palabraa, palabrab… (con cifras pegadas
+# parecerían un OCR malo).
+letras = lambda i: (letras(i // 26 - 1) if i >= 26 else "") + "abcdefghijklmnopqrstuvwxyz"[i % 26]
+RELLENO = " ".join(f"palabra{letras(i)}" for i in range(120))
 
 BIB = """@book{alfa2000libro,
   author     = {Alfa, Ana},
@@ -93,7 +96,21 @@ TRITURADORA = """@book{omega2012ensayo,
 """
 
 
+TRADUCCIONES = {"bucle": "loop"}
+
+
+# Lo que cada modelo falso añade a la respuesta, para probar cada comprobación del código.
+EXTRAS = {"cifras": " En 1987 hubo 4.321 casos [1].",
+          "literal": " Alfa escribe «nadie miente nunca» [1].",
+          "apoyo": " INVENTADO el ketman causa guerras [1]. PARCIAL el ketman lo explica todo [1].",
+          "nombres": " Según Zbigniew, el ketman es antiguo [1]."}
+
+
 class FalsoOllama(http.server.BaseHTTPRequestHandler):
+    charlas = 0  # las respuestas redactadas, para ver si se pide una segunda
+    apoyos = 0   # las comprobaciones de apoyo, frase a frase
+    ultimo = None
+
     def do_GET(self):  # /api/tags: los modelos instalados
         self.responder({"models": [{"name": "gemma4:26b"}, {"name": "qwen3.8:27b"}]})
 
@@ -104,19 +121,40 @@ class FalsoOllama(http.server.BaseHTTPRequestHandler):
                              for d in range(16)]
             r = {"embeddings": [vec(t) for t in datos["input"]]}
         else:
-            r = {"message": {"content": f"Respuesta de {datos['model']} [1]."}}
-            assert datos["options"]["temperature"] == 0
+            modelo, opciones = datos["model"], datos["options"]
+            assert opciones["temperature"] == 0 and opciones["seed"] == 0 and opciones["num_ctx"] >= 8192, opciones
+            if modelo.startswith("viejo") and "think" in datos:  # un modelo que no razona rechaza el campo
+                return self.responder({"error": f'"{modelo}" does not support thinking'}, 400)
+            assert modelo.startswith("viejo") or datos["think"] is False
             sistema, usuario = datos["messages"][0]["content"], datos["messages"][1]["content"]
+            if sistema.startswith("Traduce al inglés"):
+                return self.responder({"message": {"content": TRADUCCIONES.get(usuario, usuario)}})
+            if sistema.startswith("Comparas una afirmación"):
+                FalsoOllama.apoyos += 1
+                afirmacion = usuario.split("Afirmación: ")[1]
+                veredicto = "no" if "INVENTADO" in afirmacion else "en parte" if "PARCIAL" in afirmacion else "sí"
+                return self.responder({"message": {"content": veredicto}})
+            FalsoOllama.charlas += 1
+            FalsoOllama.ultimo = modelo
             assert datos["messages"][0]["role"] == "system" and "Solo los pasajes" in sistema
             assert re.search(r"^\[1\] Alfa \(2000\)", usuario, re.M)
             # La Trituradora, con su propia instrucción, y sus pasajes solo con ella.
             assert ("[T1] Omega" in usuario) == ("Los [T] nunca son evidencia" in sistema), (sistema, usuario)
             assert "12. Desconfía del indicador que se premia" in sistema or "[T1]" not in usuario
+            if "[T1]" in usuario:
+                texto = "El argumento: la obra sostiene que nadie miente [T1].\n\nPara triturarlo: 1. ¿Regla 8? [1]"
+            elif modelo == "mentiroso":
+                texto = "Una afirmación [99].\n\nUn párrafo sin cita."
+            else:
+                texto = "El ketman es la falsificación de preferencias [1]." + EXTRAS.get(modelo, "")
+                if m := re.search(r"^\[(\d+)\] Beta", usuario, re.M):
+                    texto += f"\n\nContrapeso: Beta discute a Alfa [{m.group(1)}]."
+            r = {"message": {"content": texto}, "prompt_eval_count": 100}
         self.responder(r)
 
-    def responder(self, r):
+    def responder(self, r, codigo=200):
         cuerpo = json.dumps(r).encode()
-        self.send_response(200)
+        self.send_response(codigo)
         self.send_header("Content-Length", str(len(cuerpo)))
         self.end_headers()
         self.wfile.write(cuerpo)
@@ -140,7 +178,7 @@ def main():
     # El PDF: una portada sin número y tres páginas numeradas desde el 1.
     paginas = [f"El ketman es la falsificación de preferencias. {RELLENO}",
                f"La zarzaparrilla solo aparece aquí. {RELLENO}",
-               f"Tercera página del libro. {RELLENO}"]
+               f"Tercera página del libro. The loop closes here. {RELLENO}"]
     typ = '#set page(numbering: none)\nPortada\n#pagebreak()\n#set page(numbering: "1")\n#counter(page).update(1)\n' + \
           "\n#pagebreak()\n".join(paginas)
     (d / "alfa.typ").write_text(typ, encoding="utf-8")
@@ -153,7 +191,9 @@ def main():
                     "--metadata", "title=Crítica de las preferencias ocultas"], check=True)
     (d / "beta.md").unlink()
 
-    (d / "extension.typ").write_text(f"Una extensión formal del ketman. {RELLENO}", encoding="utf-8")
+    # Una palabra partida con guion a final de línea, que los pasajes vuelven a unir.
+    (d / "extension.typ").write_text(f"Una extensión formal del ketman. Las prefe-\\\nrencias ocultas cuentan. {RELLENO}",
+                                     encoding="utf-8")
     subprocess.run(["typst", "compile", str(d / "extension.typ"), str(d / "Delta - Extensiones formales del modelo.pdf")], check=True)
     (d / "extension.typ").unlink()
 
@@ -190,6 +230,28 @@ def main():
 
     correr("inventariar.py", str(t), "--bib", str(t / "trituradora.bib"))
 
+    # El OCR viejo, que tiene palabras de sobra pero no de verdad, no pasa por digital.
+    sys.path.insert(0, str(AQUI))
+    from inventariar import ocr_dudoso
+    assert not ocr_dudoso("The preference falsification model explains why opinion can shift suddenly. " * 8)
+    assert ocr_dudoso("Tlie prcfcrcncc fa1sification rnodel cxplains wh y pub1ic opi nion c an sh ift . " * 8)
+    assert not ocr_dudoso("Year 1990 1991 Births 1.234 1.567 Rate 12,5% 13,1% total population thousands " * 8)
+
+    # Un artículo a dos columnas: con la maqueta, cada línea mezcla las dos; en el orden de
+    # lectura, que es el de los pasajes, la columna izquierda sale entera antes que la derecha.
+    from inventariar import paginas
+    columnas = d / "columnas"
+    columnas.mkdir()
+    izquierda = " ".join(f"izq{letras(i)}" for i in range(150))
+    derecha = " ".join(f"der{letras(i)}" for i in range(150))
+    (columnas / "c.typ").write_text(f"#set page(columns: 2)\n{izquierda}\n#colbreak()\n{derecha}", encoding="utf-8")
+    subprocess.run(["typst", "compile", str(columnas / "c.typ"), str(columnas / "c.pdf")], check=True)
+    lectura = paginas(columnas / "c.pdf", maqueta=False)[1][0].split()
+    assert lectura.index(f"izq{letras(149)}") < lectura.index("dera"), "la columna izquierda, entera, primero"
+    maqueta = paginas(columnas / "c.pdf")[1][0].splitlines()
+    assert any("izq" in l and "der" in l for l in maqueta), "con la maqueta, las columnas se mezclan"
+    shutil.rmtree(columnas)
+
     # Sin Ollama: índice léxico, y avisa.
     sin = dict(os.environ, OLLAMA_HOST="127.0.0.1:9")
     salida = correr("rag.py", "indexar", str(d), *bib, env=sin)
@@ -201,7 +263,8 @@ def main():
 
     servidor = http.server.HTTPServer(("127.0.0.1", 0), FalsoOllama)
     threading.Thread(target=servidor.serve_forever, daemon=True).start()
-    con = dict(os.environ, OLLAMA_HOST=f"127.0.0.1:{servidor.server_port}")
+    # Los vectores falsos quedan lejos de todo: el umbral, abierto, salvo donde se prueba.
+    con = dict(os.environ, OLLAMA_HOST=f"127.0.0.1:{servidor.server_port}", RAG_UMBRAL="2")
     salida = correr("rag.py", "indexar", str(d), *bib, env=con)
     assert "pasajes, 0 sin vector" in salida, salida  # los vectores llegan en la segunda pasada
     salida = correr("rag.py", "indexar", str(d), "--embed", "otro-modelo", *bib, env=con)
@@ -223,23 +286,72 @@ def main():
 
     # El contrapeso llega aunque la búsqueda no lo suba: con vectores, con su mejor pasaje;
     # solo con la búsqueda léxica, que no lo encuentra, nombrado.
-    salida = correr("rag.py", "preguntar", str(d), "zarzaparrilla", "--k", "1", *bib, env=con)
+    # Con vectores, el contrapeso trae su pasaje más próximo solo si queda dentro del umbral;
+    # si no, se nombra sin pasaje, en lugar de traer una página que no viene a cuento.
+    salida = correr("rag.py", "preguntar", str(d), "zarzaparrilla", "--k", "1", "--umbral", "2", *bib, env=con)
     assert re.search(r"^\[\d\] Beta \(2010\).*contraste y crítica de Alfa", salida, re.M), salida
     assert "sin pasaje" not in salida and "solo búsqueda léxica" not in salida, salida
+    salida = correr("rag.py", "preguntar", str(d), "zarzaparrilla", "--k", "1", "--umbral", "0", *bib, env=con)
+    assert not re.search(r"^\[\d\] Beta", salida, re.M), salida
+    assert "Contrapeso sin pasaje que case con la pregunta: Beta (2010)" in salida, salida
     salida = correr("rag.py", "preguntar", str(d), "zarzaparrilla", "--k", "1", *bib, env=sin)
     assert re.search(r"^\[1\] Alfa \(2000\).*p\. 2$", salida, re.M), salida
+    # Cada página empieza con las últimas palabras de la anterior.
+    assert re.search(r"p\. 2\n    \[…\] palabra\w+ ", salida), salida  # la cola de la página 1
     assert "Contrapeso sin pasaje que case con la pregunta: Beta (2010)" in salida, salida
     assert "Delta" not in salida, salida
+
+    # La palabra partida a final de línea, unida; y las palabras vacías, fuera de la búsqueda.
+    salida = correr("rag.py", "preguntar", str(d), "las preferencias", *bib, env=sin)
+    assert "Las preferencias ocultas" in salida, salida
+
+    # Con modelo, la pregunta se traduce al inglés para la búsqueda léxica.
+    salida = correr("rag.py", "preguntar", str(d), "bucle", "--modelo", "gemma4:26b", *bib, env=con)
+    assert re.search(r"^\[1\] Alfa \(2000\).*p\. 3$", salida, re.M), salida
 
     # El modelo de la respuesta es cualquiera de Ollama, y no hay uno por defecto.
     r = subprocess.run(["uv", "run", "--quiet", "--script", "rag.py", "preguntar", str(d), "ketman", "--responder", *bib],
                        capture_output=True, text=True, cwd=AQUI, env=con)
     assert r.returncode != 0 and "gemma4:26b, qwen3.8:27b" in r.stderr, r.stderr
-    for modelo in ("gemma4:26b", "qwen3.8:27b"):
+    for modelo in ("gemma4:26b", "qwen3.8:27b", "viejo:1b"):  # viejo: sin think, se reintenta sin el campo
+        FalsoOllama.charlas = FalsoOllama.apoyos = 0
         salida = correr("rag.py", "preguntar", str(d), "ketman", "--responder", "--modelo", modelo, *bib, env=con)
-        assert salida.startswith(f"Respuesta de {modelo} [1]."), salida
+        assert FalsoOllama.ultimo == modelo and salida.startswith("El ketman es la falsificación de preferencias [1].")
+        assert "Contrapeso:" in salida and FalsoOllama.charlas == 1 and "Aviso" not in salida, salida  # cumple a la primera
+        assert FalsoOllama.apoyos == 2, FalsoOllama.apoyos  # una comprobación por frase citada
+        assert re.search(r"^\[1\] Alfa.*\n    .*El ketman", salida, re.M), salida  # los pasajes, a la vista
+
+    # La abstención la decide el código: con ningún pasaje dentro del umbral, no se llama al modelo.
+    FalsoOllama.charlas = 0
+    salida = correr("rag.py", "preguntar", str(d), "ketman", "--responder", "--modelo", "gemma4:26b", "--umbral", "0", *bib, env=con)
+    assert salida.startswith("Los pasajes recuperados no responden a esta pregunta. El más próximo queda a")
+    assert FalsoOllama.charlas == 0, FalsoOllama.charlas
+
+    # Las cifras y las citas literales que no están en su pasaje, y las frases que su pasaje no
+    # sostiene, se quitan; el apoyo parcial y los nombres propios ajenos, se avisan.
+    for modelo, quitada, aviso in [
+            ("cifras", "«En 1987 hubo 4.321 casos [1].» (una cifra que no está en sus pasajes: 1987, 4321)", None),
+            ("literal", "«Alfa escribe «nadie miente nunca» [1].» (una cita literal que no está en su pasaje", None),
+            ("apoyo", "«INVENTADO el ketman causa guerras [1].» (su pasaje no la sostiene)",
+             "apoyo parcial: «PARCIAL el ketman lo explica todo [1].»"),
+            ("nombres", None, "nombres propios que no están en los pasajes: Zbigniew")]:
+        salida = correr("rag.py", "preguntar", str(d), "ketman", "--responder", "--modelo", modelo, *bib, env=con)
+        respuesta = salida.split("\n\nAviso:")[0]
+        if quitada:
+            assert f"Aviso: se ha quitado {quitada}" in salida, salida
+            assert quitada.split("»")[0][1:] not in respuesta, respuesta
+        if aviso:
+            assert f"Aviso: {aviso}" in salida, salida
+        assert respuesta.startswith("El ketman es la falsificación de preferencias [1].") and "Contrapeso:" in respuesta, salida
+
+    # La respuesta que incumple las reglas se pide otra vez, y si sigue, se avisa.
+    FalsoOllama.charlas = 0
+    salida = correr("rag.py", "preguntar", str(d), "ketman", "--responder", "--modelo", "mentiroso", *bib, env=con)
+    assert FalsoOllama.charlas == 2, FalsoOllama.charlas
+    assert "Aviso: se ha quitado «Una afirmación [99].» (cita pasajes que no existen: [99])." in salida, salida
+    assert "Aviso: 1 párrafo(s) sin cita." in salida and "Aviso: falta el párrafo «Contrapeso:»." in salida, salida
     salida = correr("rag.py", "preguntar", str(d), "ketman", "--responder", *bib, env=dict(con, RAG_MODELO="qwen3.8:27b"))
-    assert salida.startswith("Respuesta de qwen3.8:27b [1]."), salida
+    assert FalsoOllama.ultimo == "qwen3.8:27b" and salida.startswith("El ketman"), salida
 
     # triturar: el objeto, [T1], con su tesis y sus reglas; luego la biblioteca, con lo que
     # señala el campo contraste, aunque la búsqueda no lo subiera.
@@ -247,8 +359,16 @@ def main():
     assert re.search(r"^\[T1\] Omega \(2012\), Ensayo sobre preferencias reveladas, p\. 1 del visor\. La Trituradora: "
                      r"tesis «El ketman demuestra que nadie miente en público»; reglas del manual en juego: 8, 9$", salida, re.M), salida
     assert "Beta (2010)" in salida and "Psi" not in salida and "Sigma" not in salida, salida
+    FalsoOllama.charlas = 0
     salida = correr("rag.py", "triturar", str(d), "ketman", "--responder", "--modelo", "qwen3.8:27b", *bib, env=con)
-    assert salida.startswith("Respuesta de qwen3.8:27b"), salida
+    assert salida.startswith("El argumento:") and FalsoOllama.charlas == 1 and "Aviso" not in salida, salida
+
+    # evaluar: en qué puesto sale el pasaje correcto, y a qué distancia.
+    (d / "preguntas.tsv").write_text("pregunta\tclave\tpagina\nketman falsificación\talfa2000libro\t1\n"
+                                     "zarzaparrilla\talfa2000libro\t2\nnada\talfa2000libro\t99\n", encoding="utf-8")
+    salida = correr("rag.py", "evaluar", str(d), str(d / "preguntas.tsv"), *bib, env=con)
+    assert "No está en el índice: alfa2000libro, 99" in salida and "Entre los 5 primeros: 2/2" in salida, salida
+    assert "Rango recíproco medio" in salida and "percentil 90" in salida, salida
 
     # Lo que vuelve a propuesta sale del índice.
     (d / "biblioteca.bib").write_text(BIB.replace("Formaliza a Alfa.},\n  estado     = {curada}",

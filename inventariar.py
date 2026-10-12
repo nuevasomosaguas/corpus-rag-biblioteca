@@ -115,29 +115,52 @@ def epub(ruta):
         return {"Title": dato("title"), "Author": dato("creator")}, secciones
 
 
-def paginas(ruta):
-    """Los metadatos y el texto de cada página (o de cada sección, en un EPUB)."""
+def paginas(ruta, maqueta=True):
+    """Los metadatos y el texto de cada página (o de cada sección, en un EPUB).
+
+    maqueta=True conserva la disposición de la página, que deja el número impreso en su
+    línea; es la que necesita el inventario. Con maqueta=False, el texto sigue el orden de
+    lectura, que no mezcla las dos columnas de un artículo en la misma línea, y las
+    palabras partidas con guion a final de línea se vuelven a unir: es la de los pasajes."""
     tipo = ruta.suffix.lower()
     if tipo == ".epub":
         return epub(ruta)
     if tipo == ".djvu":
         texto = salida("djvutxt", str(ruta))
     else:
-        texto = salida("pdftotext", "-layout", str(ruta), "-")
+        texto = salida("pdftotext", *(["-layout"] if maqueta else []), str(ruta), "-")
+    if not maqueta:
+        texto = re.sub(r"(\w)-\n\s*([a-záéíóúüñ])", r"\1\2", texto)
     info = dict(l.split(":", 1) for l in salida("pdfinfo", str(ruta)).splitlines() if ":" in l) if tipo == ".pdf" else {}
     total = int(salida("djvused", "-e", "n", str(ruta)) or 0) if tipo == ".djvu" else int(info.get("Pages", "0").strip() or 0)
     # pdftotext y djvutxt cierran cada página con un salto de página.
     return info, (texto.split("\f") + [""] * total)[:total]
 
 
+def ocr_dudoso(texto):
+    """Si un texto parece un OCR malo: menos del 80% de sus fichas (sin contar las cifras)
+    parecen palabras, letras con alguna vocal, o más del 8% son letras sueltas que no son
+    palabras de una letra. ponytail: umbrales a ojo; afinarlos con libros de verdad."""
+    fichas = [f.strip(".,;:!?¿¡()[]«»\"'’“”-–—") for f in texto.split()]
+    fichas = [f for f in fichas if f and not re.fullmatch(r"[\d.,%/:+-]+", f)]
+    if len(fichas) < 50:
+        return False
+    palabras = sum(f.isalpha() and len(f) > 1 and bool(re.search(r"[aeiouyáéíóúü]", f, re.I)) for f in fichas)
+    sueltas = sum(len(f) == 1 and f.lower() not in "aeiouy" for f in fichas)
+    return palabras / len(fichas) < 0.8 or sueltas / len(fichas) > 0.08
+
+
 def examinar(todas, total):
     """texto, páginas reales, idioma y caracteres ilegibles por cada mil palabras, con
-    diez páginas repartidas por el libro."""
+    diez páginas repartidas por el libro. Un texto con palabras de sobra puede ser un OCR
+    viejo: «OCR dudoso» si pocas fichas parecen palabras o abundan las letras sueltas."""
     muestra = sorted({max(1, round(total * i / 11)) for i in range(1, 11)}) if total else []
     textos = {n: todas[n - 1] for n in muestra}
     palabras = sorted(len(t.split()) for t in textos.values())
     mediana = palabras[len(palabras) // 2] if palabras else 0
     texto = "digital" if mediana >= 80 else "escaneado" if mediana <= 10 else "mixto (revisar)"
+    if texto == "digital" and ocr_dudoso(" ".join(textos.values())):
+        texto = "OCR dudoso"
 
     # El número impreso: una línea que es solo un número, o que empieza o acaba en uno
     # (la cabecera «12  Capítulo»), entre las dos primeras y las dos últimas.
