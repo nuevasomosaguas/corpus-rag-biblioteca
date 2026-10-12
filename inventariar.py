@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""inventariar.py CARPETA [--bib biblioteca.bib]: el inventario de los PDF del corpus.
+"""inventariar.py CARPETA [--bib biblioteca.bib]: el inventario de los libros del corpus.
 
-Añade a CARPETA/inventario.tsv una fila por cada PDF que aún no esté, con lo que se
+Añade a CARPETA/inventario.tsv una fila por cada PDF, EPUB o DjVu que aún no esté, con lo que se
 puede averiguar solo: la clave más probable de la bibliografía (por el título y el
 autor), la huella (sha256), las páginas, si tiene texto o es un escaneo, si los números
 impresos coinciden con los del visor (o con qué desfase), el idioma y, si el nombre lo
@@ -11,18 +11,25 @@ mano, y el script nunca lo toca: las filas que ya están no se reescriben.
 Un archivo renombrado se reconoce por su huella: su fila cambia de nombre y conserva lo
 demás. Avisa además de los duplicados (la misma huella), de los archivos de la lista que
 ya no están en la carpeta y de las claves que no existen en la bibliografía.
-Necesita pdfinfo y pdftotext (poppler-utils).
+Necesita pdfinfo y pdftotext (poppler-utils), y djvused y djvutxt (djvulibre) para los DjVu.
+Un EPUB no tiene páginas: cuenta sus secciones, en el orden de lectura.
 """
 import argparse
 import collections
 import csv
 import hashlib
+import html.parser
+import posixpath
 import re
 import subprocess
 import sys
 import unicodedata
+import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
+from urllib.parse import unquote
 
+FORMATOS = (".pdf", ".epub", ".djvu")
 COLUMNAS = ["clave", "archivo", "sha256", "paginas", "texto", "paginas_reales", "idioma",
             "edicion_ok", "dificil", "procedencia", "notas"]
 PALABRAS = {
@@ -38,15 +45,14 @@ def normal(s):
 
 
 def bibliografia(ruta):
-    """clave → (título, apellidos de los autores), de un .bib de un campo por línea."""
+    """clave → {campo: valor}, sin llaves, de un .bib de un campo por línea."""
     entradas, clave = {}, None
     for linea in Path(ruta).read_text(encoding="utf-8").splitlines():
         if m := re.match(r"\s*@\w+\s*\{\s*([^,\s]+)\s*,", linea):
             clave = m.group(1)
-            entradas[clave] = ["", ""]
-        elif clave and (m := re.match(r"\s*(title|author)\s*=\s*[{\"](.*?)[}\"]?,?\s*$", linea, re.I)):
-            campo = 0 if m.group(1).lower() == "title" else 1
-            entradas[clave][campo] = m.group(2).replace("{", "").replace("}", "")
+            entradas[clave] = {}
+        elif clave and (m := re.match(r"\s*(\w+)\s*=\s*[{\"](.*?)[}\"]?,?\s*$", linea)):
+            entradas[clave][m.group(1).lower()] = m.group(2).replace("{", "").replace("}", "")
     return entradas
 
 
@@ -55,7 +61,8 @@ def adivinar(texto, entradas):
     casan con el nombre del archivo y sus metadatos; None si ninguna pasa del 60 %."""
     palabras = set(normal(texto).split())
     mejor, puntos = None, 0.6
-    for clave, (titulo, autores) in entradas.items():
+    for clave, e in entradas.items():
+        titulo, autores = e.get("title", ""), e.get("author") or e.get("editor", "")
         apellido = normal(autores.split(",")[0].split(" and ")[0]).split()
         if not apellido or apellido[-1] not in palabras:
             continue
@@ -69,21 +76,65 @@ def adivinar(texto, entradas):
     return mejor
 
 
-def pdfinfo(ruta):
-    salida = subprocess.run(["pdfinfo", str(ruta)], capture_output=True, text=True).stdout
-    return dict(l.split(":", 1) for l in salida.splitlines() if ":" in l)
+def salida(*orden):
+    return subprocess.run(orden, capture_output=True, text=True).stdout
 
 
-def pagina(ruta, n):
-    return subprocess.run(["pdftotext", "-layout", "-f", str(n), "-l", str(n), str(ruta), "-"],
-                          capture_output=True, text=True).stdout
+class _Texto(html.parser.HTMLParser):
+    """El texto de un XHTML, sin la cabecera, los scripts ni los estilos, con un salto por bloque."""
+    def __init__(self):
+        super().__init__()
+        self.partes, self.fuera = [], 0
+
+    def handle_starttag(self, tag, attrs):
+        self.fuera += tag in ("head", "script", "style")
+        if tag in ("p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6"):
+            self.partes.append("\n")
+
+    def handle_endtag(self, tag):
+        self.fuera -= tag in ("head", "script", "style") and self.fuera > 0
+
+    def handle_data(self, data):
+        if not self.fuera:
+            self.partes.append(data)
 
 
-def examinar(ruta, total):
+def epub(ruta):
+    """Los metadatos (Title, Author) y el texto de cada sección del EPUB, en el orden del spine."""
+    with zipfile.ZipFile(ruta) as z:
+        opf = ET.fromstring(z.read("META-INF/container.xml")).find(".//{*}rootfile").get("full-path")
+        raiz, base = ET.fromstring(z.read(opf)), posixpath.dirname(opf)
+        items = {i.get("id"): i.get("href") for i in raiz.iterfind(".//{*}item")}
+        secciones = []
+        for ref in raiz.iterfind(".//{*}itemref"):
+            href = posixpath.normpath(posixpath.join(base, unquote(items[ref.get("idref")])))
+            p = _Texto()
+            p.feed(z.read(href).decode("utf-8", "ignore"))
+            secciones.append("".join(p.partes))
+        dato = lambda tag: next((e.text or "" for e in raiz.iterfind(f".//{{*}}{tag}")), "")
+        return {"Title": dato("title"), "Author": dato("creator")}, secciones
+
+
+def paginas(ruta):
+    """Los metadatos y el texto de cada página (o de cada sección, en un EPUB)."""
+    tipo = ruta.suffix.lower()
+    if tipo == ".epub":
+        return epub(ruta)
+    if tipo == ".djvu":
+        texto = salida("djvutxt", str(ruta))
+    else:
+        texto = salida("pdftotext", "-layout", str(ruta), "-")
+    info = dict(l.split(":", 1) for l in salida("pdfinfo", str(ruta)).splitlines() if ":" in l) if tipo == ".pdf" else {}
+    total = int(salida("djvused", "-e", "n", str(ruta)) or 0) if tipo == ".djvu" else int(info.get("Pages", "0").strip() or 0)
+    # pdftotext y djvutxt cierran cada página con un salto de página.
+    return info, (texto.split("\f") + [""] * total)[:total]
+
+
+def examinar(todas, total):
     """texto, páginas reales, idioma y caracteres ilegibles por cada mil palabras, con
     diez páginas repartidas por el libro."""
     muestra = sorted({max(1, round(total * i / 11)) for i in range(1, 11)}) if total else []
-    textos = {n: pagina(ruta, n) for n in muestra}
+    textos = {n: todas[n - 1] for n in muestra}
     palabras = sorted(len(t.split()) for t in textos.values())
     mediana = palabras[len(palabras) // 2] if palabras else 0
     texto = "digital" if mediana >= 80 else "escaneado" if mediana <= 10 else "mixto (revisar)"
@@ -99,7 +150,7 @@ def examinar(ruta, total):
                 desfases.append(n - int(m.group(1)))
                 break
     desfase, veces = collections.Counter(desfases).most_common(1)[0] if desfases else (None, 0)
-    reales = "?" if veces < len(textos) / 2 else "sí" if desfase == 0 else f"desfase {desfase:+d}"
+    reales = "?" if not veces or veces < len(textos) / 2 else "sí" if desfase == 0 else f"desfase {desfase:+d}"
 
     todas = normal(" ".join(textos.values())).split()
     cuenta = {idioma: sum(w in lista for w in todas) for idioma, lista in PALABRAS.items()}
@@ -128,20 +179,24 @@ def main():
     huellas = {f["sha256"]: f["archivo"] for f in filas}
 
     nuevos = renombrados = 0
-    en_carpeta = {p.name for p in args.carpeta.glob("*.pdf")}
-    for pdf in sorted(args.carpeta.glob("*.pdf")):
+    libros = sorted(p for p in args.carpeta.iterdir() if p.suffix.lower() in FORMATOS)
+    en_carpeta = {p.name for p in libros}
+    for pdf in libros:
         if pdf.name in conocidos:
             continue
-        huella = hashlib.sha256(pdf.read_bytes()).hexdigest()
+        with open(pdf, "rb") as f:
+            huella = hashlib.file_digest(f, "sha256").hexdigest()
         antigua = next((f for f in filas if f["sha256"] == huella and f["archivo"] not in en_carpeta), None)
         if antigua:
             print(f"  Renombrado: {antigua['archivo']} → {pdf.name}")
             antigua["archivo"] = pdf.name
             renombrados += 1
             continue
-        info = pdfinfo(pdf)
-        total = int(info.get("Pages", "0").strip() or 0)
-        texto, reales, idioma, ilegibles = examinar(pdf, total)
+        info, todas = paginas(pdf)
+        total = len(todas)
+        texto, reales, idioma, ilegibles = examinar(todas, total)
+        if pdf.suffix.lower() == ".epub":
+            reales = "no (EPUB: secciones)"
         notas = []
         if ilegibles >= 1:
             notas.append(f"{ilegibles:.0f} caracteres ilegibles por cada mil palabras (símbolos sin Unicode): mirar las fórmulas")

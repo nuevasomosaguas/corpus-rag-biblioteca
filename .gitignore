@@ -1,0 +1,8 @@
+# Los libros, el inventario y el índice son de cada cual: nunca entran en el repositorio.
+*.pdf
+*.epub
+*.djvu
+inventario.tsv
+corpus.sqlite
+__pycache__/
+trituradora.bib

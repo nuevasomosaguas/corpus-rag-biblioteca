@@ -1,0 +1,34 @@
+% La Trituradora: la tercera capa, privada. Copia esta plantilla como
+% CARPETA/trituradora/trituradora.bib, junto a los libros de esa carpeta, y llénala tú:
+% no se publica, no está en la web y no comparte índice con la biblioteca.
+%
+% Qué entra. Una obra influyente y débil: con alcance público demostrable, como un
+% superventas, un informe que orientó una política o un artículo muy citado, y cuyo
+% argumento central rompe al menos una de las doce reglas del Manual de bolsillo
+% (https://nuevasomosaguas.github.io/manual_bolsillo.html). Triturar lo que nadie lee
+% enseña poco. Una obra débil pero sin alcance no entra; una obra seria con la que no se
+% está de acuerdo tampoco: su sitio es el contraste y crítica de la biblioteca.
+%
+% Los campos, además de los bibliográficos, un campo por línea como en biblioteca.bib:
+%   capa        trituradora, siempre: sin él, rag.py no la indexa en esta capa
+%   tesis       la tesis central de la obra, en una frase y con la mayor fidelidad posible
+%   reglas      los números de las reglas del manual que su argumento pone en juego: 2, 8
+%   contraste   las claves de la biblioteca que la ponen a prueba, separadas por comas:
+%               rag.py triturar las trae siempre, aunque la búsqueda no las suba
+%   motivo      por qué entra: su alcance y dónde falla el argumento
+%   estado      curada | propuesta: solo lo curado se indexa
+%
+% Un ejemplo, ficticio y comentado:
+%
+% @book{apellido2015titulo,
+%   author     = {Apellido, Nombre},
+%   title      = {El título del ensayo},
+%   publisher  = {Editorial},
+%   year       = {2015},
+%   capa       = {trituradora},
+%   tesis      = {Desde que se aprobó la ley, el paro bajó: la ley creó el empleo},
+%   reglas     = {8, 2},
+%   contraste  = {angrist2009mostly, huntingtonklein2021effect},
+%   motivo     = {Superventas citado en el debate parlamentario; confunde la secuencia con el efecto.},
+%   estado     = {curada}
+% }
