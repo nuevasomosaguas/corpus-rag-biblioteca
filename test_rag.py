@@ -117,8 +117,10 @@ class FalsoOllama(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         datos = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         if self.path == "/api/embed":
-            vec = lambda t: [sum(int(hashlib.md5(w.encode()).hexdigest(), 16) % 16 == d for w in t.lower().split()) + 0.01
-                             for d in range(16)]
+            # Una bolsa de palabras: salvo la zarzaparrilla, una dirección propia, para que la
+            # pregunta y su página queden a distancia cero y todo lo demás, lejos.
+            vec = lambda t: [float(d == 0) for d in range(16)] if "zarzaparrilla" in t.lower() else \
+                [sum(int(hashlib.md5(w.encode()).hexdigest(), 16) % 16 == d for w in t.lower().split()) + 0.01 for d in range(16)]
             r = {"embeddings": [vec(t) for t in datos["input"]]}
         else:
             modelo, opciones = datos["model"], datos["options"]
@@ -148,7 +150,9 @@ class FalsoOllama(http.server.BaseHTTPRequestHandler):
             else:
                 texto = "El ketman es la falsificación de preferencias [1]." + EXTRAS.get(modelo, "")
                 if m := re.search(r"^\[(\d+)\] Beta", usuario, re.M):
-                    texto += f"\n\nContrapeso: Beta discute a Alfa [{m.group(1)}]."
+                    texto += f"\n\nContrapeso: Beta, del área secundaria, discute a Alfa [{m.group(1)}]."
+                if modelo == "callado":  # cita el área secundaria sin decirlo
+                    texto = texto.replace(", del área secundaria,", "")
             r = {"message": {"content": texto}, "prompt_eval_count": 100}
         self.responder(r)
 
@@ -303,8 +307,8 @@ def main():
     salida = correr("rag.py", "preguntar", str(d), "zarzaparrilla", "--k", "1", "--umbral", "2", *bib, env=con)
     assert re.search(r"^\[\d\] Beta \(2010\).*contraste y crítica de Alfa", salida, re.M), salida
     assert "sin pasaje" not in salida and "solo búsqueda léxica" not in salida, salida
-    salida = correr("rag.py", "preguntar", str(d), "zarzaparrilla", "--k", "1", "--umbral", "0", *bib, env=con)
-    assert not re.search(r"^\[\d\] Beta", salida, re.M), salida
+    salida = correr("rag.py", "preguntar", str(d), "zarzaparrilla", "--k", "1", "--umbral", "0.5", *bib, env=con)
+    assert re.search(r"^\[1\] Alfa \(2000\).*p\. 2$", salida, re.M) and not re.search(r"^\[\d\] Beta", salida, re.M), salida
     assert "Contrapeso sin pasaje que case con la pregunta: Beta (2010)" in salida, salida
     salida = correr("rag.py", "preguntar", str(d), "zarzaparrilla", "--k", "1", *bib, env=sin)
     assert re.search(r"^\[1\] Alfa \(2000\).*p\. 2$", salida, re.M), salida
@@ -333,6 +337,10 @@ def main():
         assert FalsoOllama.apoyos == 2, FalsoOllama.apoyos  # una comprobación por frase citada
         assert re.search(r"^\[1\] Alfa.*\n    .*El ketman", salida, re.M), salida  # los pasajes, a la vista
 
+    # Con vectores, los pasajes más allá del umbral no entran, tampoco los del núcleo.
+    salida = correr("rag.py", "preguntar", str(d), "ketman", "--umbral", "0", *bib, env=con)
+    assert not re.search(r"^\[\d+\]", salida, re.M), salida
+
     # La abstención la decide el código: con ningún pasaje dentro del umbral, no se llama al modelo.
     FalsoOllama.charlas = 0
     salida = correr("rag.py", "preguntar", str(d), "ketman", "--responder", "--modelo", "gemma4:26b", "--umbral", "0", *bib, env=con)
@@ -356,6 +364,19 @@ def main():
             assert f"Aviso: {aviso}" in salida, salida
         assert respuesta.startswith("El ketman es la falsificación de preferencias [1].") and "Contrapeso:" in respuesta, salida
 
+    # El contrapeso inventado, donde no hay ninguno, también es un fallo de forma.
+    r = subprocess.run(["uv", "run", "--quiet", "--with", "sqlite-vec", "python", "-c",
+                        "import rag; print(rag.verificar('Algo [1].\\n\\nContrapeso: otra cosa [1].', "
+                        "{'1': 'Alfa (2000), p. 1'}, False, False)[1])"],
+                       capture_output=True, text=True, cwd=AQUI)
+    assert "pone un párrafo «Contrapeso:» sin contrapeso que exponer" in r.stdout, r.stdout + r.stderr
+
+    # Lo secundario citado sin decirlo se pide otra vez, y si sigue, se avisa.
+    FalsoOllama.charlas = 0
+    salida = correr("rag.py", "preguntar", str(d), "ketman", "--responder", "--modelo", "callado", *bib, env=con)
+    assert FalsoOllama.charlas == 2 and "Aviso" not in salida, salida  # el código lo rotula
+    assert re.search(r"\n\nDel área secundaria: \[\d+\], contraste y crítica de Alfa \(2000\)\.", salida), salida
+
     # La respuesta que incumple las reglas se pide otra vez, y si sigue, se avisa.
     FalsoOllama.charlas = 0
     salida = correr("rag.py", "preguntar", str(d), "ketman", "--responder", "--modelo", "mentiroso", *bib, env=con)
@@ -377,10 +398,12 @@ def main():
 
     # evaluar: en qué puesto sale el pasaje correcto, y a qué distancia.
     (d / "preguntas.tsv").write_text("pregunta\tclave\tpagina\nketman falsificación\talfa2000libro\t1\n"
-                                     "zarzaparrilla\talfa2000libro\t2\nnada\talfa2000libro\t99\n", encoding="utf-8")
+                                     "zarzaparrilla\talfa2000libro\t2\nnada\talfa2000libro\t99\n"
+                                     "receta de paella\t\t\n", encoding="utf-8")
     salida = correr("rag.py", "evaluar", str(d), str(d / "preguntas.tsv"), *bib, env=con)
     assert "No está en el índice: alfa2000libro, 99" in salida and "Entre los 5 primeros: 2/2" in salida, salida
     assert "Rango recíproco medio" in salida and "percentil 90" in salida, salida
+    assert "  fuera  receta de paella" in salida and re.search(r"0\.40  responde a \d/2, se abstiene en \d/1", salida), salida
 
     # Lo que vuelve a propuesta sale del índice.
     (d / "biblioteca.bib").write_text(BIB.replace("Formaliza a Alfa.},\n  estado     = {curada}",

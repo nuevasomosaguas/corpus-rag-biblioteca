@@ -49,7 +49,8 @@ que un pasaje en inglés pueda casar por palabras igual que uno en castellano.
 evaluar mide la recuperación con un TSV de preguntas, con las columnas pregunta, clave y
 pagina (el número impreso, o la etiqueta tal como la cita rag.py): en qué puesto sale el
 pasaje correcto, y a qué distancia del coseno, para elegir --umbral midiendo. Una pregunta
-puede aceptar varias páginas, separadas por «|»: 125|126.
+puede aceptar varias páginas, separadas por «|»: 125|126. Una pregunta sin clave es una que
+el corpus no responde: con ellas, evaluar dice qué umbral de abstención separa unas de otras.
 
 Nada sale de la máquina: Ollama corre en local (OLLAMA_HOST, por defecto
 localhost:11434). Los dos modelos son independientes y cualquiera de Ollama sirve: el de
@@ -79,7 +80,10 @@ OLLAMA = OLLAMA if OLLAMA.startswith("http") else f"http://{OLLAMA}"
 PALABRAS_FRAGMENTO = 400  # un EPUB no tiene páginas: se trocea en fragmentos de este tamaño
 SOLAPE = 80               # cada pasaje empieza con las últimas palabras del anterior
 FORMATO = "2"             # la forma de los pasajes: si cambia, el índice se rehace
-UMBRAL = float(os.environ.get("RAG_UMBRAL", "0.55"))  # ponytail: punto de partida; evaluar lo afina
+# Medido con bge-m3 en un corpus de 33 libros: a 0,46 se abstiene en 10 de 10 preguntas que el
+# corpus no responde y responde a 25 de 30 que sí; a 0,55 respondía a todas, pero solo se
+# abstenía en 3 de 10. Con otro corpus u otro modelo de vectores, evaluar lo vuelve a medir.
+UMBRAL = float(os.environ.get("RAG_UMBRAL", "0.46"))
 RESERVA = 2048            # las fichas que se dejan libres para la respuesta
 # Las palabras vacías no entran en la búsqueda léxica: casarían con cualquier página.
 VACIAS = set("""que los las del por con una para como pero sus más este esta estos estas ese esa eso
@@ -440,6 +444,13 @@ def recuperar(db, bib, pregunta, lexico, k, umbral, obligadas=()):
     # nada de La Trituradora, aunque alguien la hubiera puesto en la bibliografía.
     orden = [i for i in buscar(db, lexico, q) if clave_de[i] in bib and indexable(bib[clave_de[i]])
              and not de_la_trituradora(bib[clave_de[i]])]
+    # Con vectores, fuera lo que queda más allá del umbral: «el núcleo primero» no puede
+    # llenar sus puestos con páginas del núcleo que no vienen a cuento.
+    cerca = None
+    if q is not None:
+        d = distancias(db, q, orden)
+        cerca = min(d.values(), default=None)  # el más próximo, para decidir si hay de qué responder
+        orden = [i for i in orden if d.get(i, 2) <= umbral]
 
     # 1. El núcleo primero; 2. lo secundario después, etiquetado.
     nucleo = [i for i in orden if bib[clave_de[i]].get("capa") != "secundaria"][:k]
@@ -463,8 +474,6 @@ def recuperar(db, bib, pregunta, lexico, k, umbral, obligadas=()):
     for i in nucleo + secundario:
         pagina, texto = db.execute("SELECT pagina, texto FROM pasajes WHERE id = ?", (i,)).fetchone()
         fuentes.append((clave_de[i], cita(bib, clave_de[i], pagina), texto))
-    # La distancia del pasaje más próximo, para que el código decida si hay de qué responder.
-    cerca = min(distancias(db, q, nucleo + secundario).values(), default=None) if q is not None else None
     return fuentes, sin_pasaje, cerca
 
 
@@ -518,8 +527,14 @@ def verificar(respuesta, pasajes, contrapeso, trituradora):
                if p.strip() and not re.search(r"\[T?\d+\]", p) and not p.strip().startswith("Los pasajes no dicen")]
     if sueltos:
         forma.append(f"{len(sueltos)} párrafo(s) sin cita")
+    # Lo secundario nunca pasa por consenso: si se cita, la respuesta tiene que decirlo.
+    citados = set(re.findall(r"\[(T?\d+)\]", respuesta))
+    if any("Área secundaria" in pasajes.get(c, "") for c in citados) and "secundaria" not in respuesta.lower():
+        forma.append("cita el área secundaria sin decir que lo es")
     obligatorios = ["El argumento:", "Para triturarlo:"] if trituradora else ["Contrapeso:"] if contrapeso else []
     forma += [f"falta el párrafo «{f}»" for f in obligatorios if f not in respuesta]
+    if not trituradora and not contrapeso and "Contrapeso:" in respuesta:
+        forma.append("pone un párrafo «Contrapeso:» sin contrapeso que exponer")
     return malas, forma, avisos
 
 
@@ -565,12 +580,24 @@ def redactar(args, sistema, numeradas, sin_pasaje, pregunta, trituradora=False):
                             [{"role": "user", "content": usuario}, {"role": "assistant", "content": respuesta}])
     malas, forma, avisos = verificar(respuesta, pasajes, contrapeso, trituradora)
     quitadas = []
+    # Lo que el código puede arreglar sin el modelo, lo arregla: el contrapeso inventado se
+    # quita, y lo secundario sin rótulo se rotula con la cabecera de su pasaje.
+    if "pone un párrafo «Contrapeso:» sin contrapeso que exponer" in forma:
+        respuesta = "\n\n".join(p for p in re.split(r"\n\s*\n", respuesta) if not p.strip().startswith("Contrapeso:"))
+        forma.remove("pone un párrafo «Contrapeso:» sin contrapeso que exponer")
+        quitadas.append("el párrafo «Contrapeso:», sin contrapeso que exponer")
+    if "cita el área secundaria sin decir que lo es" in forma:
+        rotulos = [f"[{c}], {pasajes[c].split('Área secundaria, ', 1)[1].splitlines()[0]}"
+                   for c in sorted(set(re.findall(r"\[(T?\d+)\]", respuesta)), key=lambda c: (len(c), c))
+                   if "Área secundaria" in pasajes.get(c, "")]
+        respuesta += "\n\nDel área secundaria: " + "; ".join(rotulos) + "."
+        forma.remove("cita el área secundaria sin decir que lo es")
     for f, motivo in malas:
         respuesta = quitar(respuesta, f)
         quitadas.append(f"«{plano(f)}» ({motivo})")
     # El apoyo, frase a frase: las que citan y afirman algo, no las preguntas.
     for f in frases(respuesta):
-        if re.search(r"\[T?\d+\]", f) and "?" not in f and not f.startswith(("Los pasajes no dicen", NO_RESPONDEN)):
+        if re.search(r"\[T?\d+\]", f) and "?" not in f and not f.startswith(("Los pasajes no dicen", NO_RESPONDEN, "Del área secundaria:")):
             veredicto = apoyo(args.modelo, f, pasajes)
             if veredicto == "no":
                 respuesta = quitar(respuesta, f)
@@ -644,12 +671,21 @@ def triturar(args):
 
 
 def evaluar(args):
-    """En qué puesto sale el pasaje correcto de cada pregunta del TSV, y a qué distancia."""
+    """En qué puesto sale el pasaje correcto de cada pregunta del TSV, y a qué distancia; y,
+    con las preguntas sin clave, que el corpus no responde, qué umbral separa unas de otras."""
     db = abrir(args.carpeta)
     with open(args.preguntas, newline="", encoding="utf-8") as f:
         filas = list(csv.DictReader(f, delimiter="\t"))
-    rangos, cercania = [], []
+    rangos, cercania, mas_cerca, fuera = [], [], [], []
     for f in filas:
+        q = vector_de(db, f["pregunta"])
+        # La distancia del pasaje más próximo de todo el índice: la que decide la abstención.
+        proximo = db.execute("SELECT distance FROM vec WHERE embedding MATCH ? AND k = 1",
+                             (sqlite_vec.serialize_float32(q),)).fetchone()[0] if q is not None else None
+        if not f["clave"]:
+            fuera.append(proximo)
+            print(f"  fuera  {f['pregunta']}" + (f"  (el más próximo, a {proximo:.3f})" if q is not None else ""))
+            continue
         # Varias páginas válidas, separadas por «|»: un argumento que ocupa dos, o el pasaje
         # siguiente, que empieza con la cola del anterior.
         etiquetas = [e for p in f["pagina"].split("|") for e in (p.strip(), f"p. {p.strip()}")]
@@ -658,13 +694,13 @@ def evaluar(args):
         if not objetivo:
             print(f"  No está en el índice: {f['clave']}, {f['pagina']}")
             continue
-        q = vector_de(db, f["pregunta"])
         orden = buscar(db, consulta_lexica(args, f["pregunta"]), q)
         rango = next((n for n, i in enumerate(orden, 1) if i in objetivo), None)
         rangos.append(rango)
-        linea = f"  {rango or '—':>4}  {f['clave']}, {f['pagina']}: {f['pregunta']}"
+        linea = f"  {rango or '—':>5}  {f['clave']}, {f['pagina']}: {f['pregunta']}"
         if q is not None:
             cercania.append(min(distancias(db, q, objetivo).values()))
+            mas_cerca.append(proximo)
             linea += f"  (distancia {cercania[-1]:.3f})"
         print(linea)
     if not rangos:
@@ -675,8 +711,13 @@ def evaluar(args):
     if cercania:
         cercania.sort()
         p90 = cercania[min(len(cercania) - 1, int(0.9 * len(cercania)))]
-        print(f"Distancia del pasaje correcto: mediana {cercania[len(cercania) // 2]:.3f}, percentil 90 {p90:.3f}. "
-              f"Un --umbral de {p90:.2f} deja pasar nueve de cada diez pasajes pertinentes.")
+        print(f"Distancia del pasaje correcto: mediana {cercania[len(cercania) // 2]:.3f}, percentil 90 {p90:.3f}: "
+              f"un umbral de contrapeso de {p90:.2f} deja pasar nueve de cada diez pasajes pertinentes.")
+    if mas_cerca and fuera:
+        print("La abstención, por umbral: a cuántas preguntas pertinentes responde y en cuántas de fuera se abstiene.")
+        for u in [x / 100 for x in range(40, 62, 2)]:
+            print(f"  {u:.2f}  responde a {sum(d <= u for d in mas_cerca)}/{len(mas_cerca)}, "
+                  f"se abstiene en {sum(d > u for d in fuera)}/{len(fuera)}")
 
 
 def main():
