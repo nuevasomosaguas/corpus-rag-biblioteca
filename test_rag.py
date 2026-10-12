@@ -230,6 +230,18 @@ def main():
 
     correr("inventariar.py", str(t), "--bib", str(t / "trituradora.bib"))
 
+    # Un archivo que cambia con el mismo nombre, como un escaneo pasado por OCR sobre sí mismo,
+    # se vuelve a examinar, y lo rellenado a mano se conserva.
+    escaneo = d / "Gamma - Borrador sin revisar.djvu"
+    inventario = (d / "inventario.tsv").read_text().replace("\tclave por el título: comprobar", "\tnota a mano", 1)
+    (d / "inventario.tsv").write_text(inventario)
+    (d / "g.txt").write_text(f'(page 0 0 8 8 "Otra capa de texto, ya corregida. {RELLENO}")')
+    subprocess.run(["djvused", str(escaneo), "-e", f"select 1; set-txt {d / 'g.txt'}", "-s"], check=True)
+    (d / "g.txt").unlink()
+    salida = correr("inventariar.py", str(d), *bib)
+    assert "Ha cambiado, se vuelve a examinar: Gamma - Borrador sin revisar.djvu" in salida, salida
+    assert "1 vueltos a examinar" in salida and "nota a mano" in (d / "inventario.tsv").read_text(), salida
+
     # El OCR viejo, que tiene palabras de sobra pero no de verdad, no pasa por digital.
     sys.path.insert(0, str(AQUI))
     from inventariar import ocr_dudoso

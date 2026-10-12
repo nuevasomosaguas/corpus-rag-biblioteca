@@ -9,7 +9,8 @@ dice, la procedencia. Lo demás (la edición, lo difícil, la procedencia) se re
 mano, y el script nunca lo toca: las filas que ya están no se reescriben.
 
 Un archivo renombrado se reconoce por su huella: su fila cambia de nombre y conserva lo
-demás. Avisa además de los duplicados (la misma huella), de los archivos de la lista que
+demás. Uno que cambia con el mismo nombre, como un PDF pasado por OCR sobre sí mismo, se
+vuelve a examinar: su fila renueva lo automático y conserva lo que se rellenó a mano. Avisa además de los duplicados (la misma huella), de los archivos de la lista que
 ya no están en la carpeta y de las claves que no existen en la bibliografía.
 Necesita pdfinfo y pdftotext (poppler-utils), y djvused y djvutxt (djvulibre) para los DjVu.
 Un EPUB no tiene páginas: cuenta sus secciones, en el orden de lectura.
@@ -138,22 +139,22 @@ def paginas(ruta, maqueta=True):
 
 
 def ocr_dudoso(texto):
-    """Si un texto parece un OCR malo: menos del 80% de sus fichas (sin contar las cifras)
-    parecen palabras, letras con alguna vocal, o más del 8% son letras sueltas que no son
-    palabras de una letra. ponytail: umbrales a ojo; afinarlos con libros de verdad."""
+    """Si un texto parece un OCR malo: menos del 60% de sus fichas (sin contar las cifras)
+    parecen palabras, letras con alguna vocal. No cuenta las letras sueltas, que en un
+    libro con fórmulas abundan: medido en 35 libros reales, los de estadística bajan hasta
+    el 65% de palabras por sus x, f y X1, y un OCR destrozado queda en torno al 50%."""
     fichas = [f.strip(".,;:!?¿¡()[]«»\"'’“”-–—") for f in texto.split()]
     fichas = [f for f in fichas if f and not re.fullmatch(r"[\d.,%/:+-]+", f)]
     if len(fichas) < 50:
         return False
     palabras = sum(f.isalpha() and len(f) > 1 and bool(re.search(r"[aeiouyáéíóúü]", f, re.I)) for f in fichas)
-    sueltas = sum(len(f) == 1 and f.lower() not in "aeiouy" for f in fichas)
-    return palabras / len(fichas) < 0.8 or sueltas / len(fichas) > 0.08
+    return palabras / len(fichas) < 0.6
 
 
 def examinar(todas, total):
     """texto, páginas reales, idioma y caracteres ilegibles por cada mil palabras, con
     diez páginas repartidas por el libro. Un texto con palabras de sobra puede ser un OCR
-    viejo: «OCR dudoso» si pocas fichas parecen palabras o abundan las letras sueltas."""
+    viejo: «OCR dudoso» si pocas de sus fichas parecen palabras."""
     muestra = sorted({max(1, round(total * i / 11)) for i in range(1, 11)}) if total else []
     textos = {n: todas[n - 1] for n in muestra}
     palabras = sorted(len(t.split()) for t in textos.values())
@@ -204,11 +205,21 @@ def main():
     nuevos = renombrados = 0
     libros = sorted(p for p in args.carpeta.iterdir() if p.suffix.lower() in FORMATOS)
     en_carpeta = {p.name for p in libros}
+    por_nombre = {f["archivo"]: f for f in filas}
+    reexaminados = 0
     for pdf in libros:
-        if pdf.name in conocidos:
-            continue
         with open(pdf, "rb") as f:
             huella = hashlib.file_digest(f, "sha256").hexdigest()
+        if pdf.name in conocidos:
+            fila = por_nombre[pdf.name]
+            if fila["sha256"] != huella:
+                info, todas = paginas(pdf)
+                texto, reales, idioma, _ = examinar(todas, len(todas))
+                print(f"  Ha cambiado, se vuelve a examinar: {pdf.name} ({fila['texto']} → {texto})")
+                fila.update(sha256=huella, paginas=len(todas), texto=texto, idioma=idioma,
+                            paginas_reales="no (EPUB: secciones)" if pdf.suffix.lower() == ".epub" else reales)
+                reexaminados += 1
+            continue
         antigua = next((f for f in filas if f["sha256"] == huella and f["archivo"] not in en_carpeta), None)
         if antigua:
             print(f"  Renombrado: {antigua['archivo']} → {pdf.name}")
@@ -244,7 +255,7 @@ def main():
         w.writeheader()
         w.writerows(filas)
 
-    print(f"{tsv}: {nuevos} nuevos, {renombrados} renombrados, {len(filas)} en total.")
+    print(f"{tsv}: {nuevos} nuevos, {renombrados} renombrados, {reexaminados} vueltos a examinar, {len(filas)} en total.")
     for f in filas:
         if f["archivo"] not in en_carpeta:
             print(f"  Ya no está en la carpeta: {f['archivo']}")

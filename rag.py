@@ -48,7 +48,8 @@ que un pasaje en inglés pueda casar por palabras igual que uno en castellano.
 
 evaluar mide la recuperación con un TSV de preguntas, con las columnas pregunta, clave y
 pagina (el número impreso, o la etiqueta tal como la cita rag.py): en qué puesto sale el
-pasaje correcto, y a qué distancia del coseno, para elegir --umbral midiendo.
+pasaje correcto, y a qué distancia del coseno, para elegir --umbral midiendo. Una pregunta
+puede aceptar varias páginas, separadas por «|»: 125|126.
 
 Nada sale de la máquina: Ollama corre en local (OLLAMA_HOST, por defecto
 localhost:11434). Los dos modelos son independientes y cualquiera de Ollama sirve: el de
@@ -649,8 +650,11 @@ def evaluar(args):
         filas = list(csv.DictReader(f, delimiter="\t"))
     rangos, cercania = [], []
     for f in filas:
-        objetivo = {i for (i,) in db.execute("SELECT id FROM pasajes WHERE clave = ? AND pagina IN (?, ?)",
-                                             (f["clave"], f"p. {f['pagina']}", f["pagina"]))}
+        # Varias páginas válidas, separadas por «|»: un argumento que ocupa dos, o el pasaje
+        # siguiente, que empieza con la cola del anterior.
+        etiquetas = [e for p in f["pagina"].split("|") for e in (p.strip(), f"p. {p.strip()}")]
+        objetivo = {i for (i,) in db.execute(f"SELECT id FROM pasajes WHERE clave = ? AND pagina IN ({','.join('?' * len(etiquetas))})",
+                                             (f["clave"], *etiquetas))}
         if not objetivo:
             print(f"  No está en el índice: {f['clave']}, {f['pagina']}")
             continue

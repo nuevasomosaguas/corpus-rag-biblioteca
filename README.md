@@ -42,7 +42,7 @@ Qué modelo cabe en tu máquina lo dice la sección siguiente.
 
 **Sin tarjeta gráfica** funciona todo menos la redacción rápida: `indexar` calcula los vectores en la CPU, más despacio pero una sola vez, y `preguntar` sin `--responder` devuelve los pasajes con su cita al instante. Es además el modo más fiable, porque no genera nada. Redactar en la CPU también se puede, pero despacio: en un procesador de escritorio, unas 7 fichas por segundo, y varios minutos por respuesta entre leer los pasajes, redactar y comprobar frase a frase.
 
-**Para redactar con la tarjeta**, el modelo tiene que caber entero en su memoria, junto al de vectores (`bge-m3`, algo más de 1 GB) y la memoria de la conversación, que a 16.000 fichas ocupa entre 1 y 3 GB según el modelo. Si no cabe, Ollama manda una parte a la CPU y la respuesta tarda minutos. La cuenta: un modelo cuantizado a 4 bits (Q4_K_M) ocupa unos 0,6 GB por cada mil millones de parámetros.
+**Para redactar con la tarjeta**, el modelo tiene que caber entero en su memoria, junto al de vectores (`bge-m3`, algo más de 1 GB) y la memoria de la conversación, que a 16.000 fichas ocupa entre 1 y 3 GB según el modelo. Si no cabe, Ollama manda una parte a la CPU y la velocidad cae, mucho en un modelo denso. La cuenta: un modelo cuantizado a 4 bits (Q4_K_M) ocupa unos 0,6 GB por cada mil millones de parámetros.
 
 | Memoria de la tarjeta | Tamaño del modelo que redacta |
 |---|---|
@@ -51,7 +51,7 @@ Qué modelo cabe en tu máquina lo dice la sección siguiente.
 | 16 GB | unos 14.000 millones, con holgura |
 | 24 GB | hasta unos 30.000 millones |
 
-Las cifras son aproximadas. Medido con `ollama ps` a 16.000 fichas de contexto: un Gemma 4 de 12.000 millones en Q4_K_M ocupa 9,2 GB (7,4 de pesos), y cabe en 16 GB con `bge-m3`; `gemma4:26b` ocupa 18 GB, y no cabe. En un Mac con Apple Silicon la memoria es compartida: cuenta la total menos unos 8 GB para el sistema. En cualquier máquina, 16 GB de RAM como mínimo y 32 para ir holgado. El índice ocupa unos pocos GB por cada mil libros.
+Las cifras son aproximadas. Medido en una RTX 5060 Ti de 16 GB, a 16.000 fichas de contexto: un Gemma 4 de 12.000 millones en Q4_K_M ocupa 8,3 GB, va entero en la tarjeta y redacta a unas 49 fichas por segundo, frente a 7 en la CPU. `gemma4:26b` ocupa 18 GB y no cabe: Ollama pone el 52% en la tarjeta y el 48% en la CPU, y aun así redacta a 31, porque es un modelo de mezcla de expertos, que en cada ficha activa solo una parte de sus parámetros; uno denso de su tamaño caería mucho más. Cuenta la memoria libre, no la total: en esa máquina, el escritorio ya ocupaba 3,6 GB de la tarjeta. En un Mac con Apple Silicon la memoria es compartida: cuenta la total menos unos 8 GB para el sistema. En cualquier máquina, 16 GB de RAM como mínimo y 32 para ir holgado. El índice ocupa unos pocos GB por cada mil libros.
 
 **Comprueba que Ollama usa la tarjeta.** `ollama ps`, con el modelo cargado, dice el reparto: tiene que decir 100% GPU. En algunas distribuciones, el paquete `ollama` solo trae la CPU, y la tarjeta pide otro: en Arch, `ollama-cuda` para NVIDIA u `ollama-vulkan`. Si `ollama ps` dice 100% CPU con una tarjeta que debería bastar, es eso.
 
