@@ -371,6 +371,15 @@ def main():
                        capture_output=True, text=True, cwd=AQUI)
     assert "pone un párrafo «Contrapeso:» sin contrapeso que exponer" in r.stdout, r.stdout + r.stderr
 
+    # La cita literal en el idioma del pasaje, con su traducción sin comillas, pasa; la
+    # traducción entre comillas, no.
+    r = subprocess.run(["uv", "run", "--quiet", "--with", "sqlite-vec", "python", "-c",
+                        "import rag; p = {'1': 'Alfa (2000), p. 1\\nPeople live a lie in public.'}; "
+                        "print(rag.verificar('Alfa: «live a lie» (vivir en la mentira) [1].', p, False, False)[0]); "
+                        "print(rag.verificar('Alfa: «vivir en la mentira» [1].', p, False, False)[0])"],
+                       capture_output=True, text=True, cwd=AQUI)
+    assert r.stdout.splitlines()[0] == "[]" and "cita literal que no está" in r.stdout.splitlines()[1], r.stdout + r.stderr
+
     # Lo secundario citado sin decirlo se pide otra vez, y si sigue, se avisa.
     FalsoOllama.charlas = 0
     salida = correr("rag.py", "preguntar", str(d), "ketman", "--responder", "--modelo", "callado", *bib, env=con)
