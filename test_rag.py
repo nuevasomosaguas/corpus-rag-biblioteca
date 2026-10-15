@@ -104,6 +104,14 @@ EXTRAS = {"cifras": " En 1987 hubo 4.321 casos [1].",
           "literal": " Alfa escribe «nadie miente nunca» [1].",
           "apoyo": " INVENTADO el ketman causa guerras [1]. PARCIAL el ketman lo explica todo [1].",
           "nombres": " Según Zbigniew, el ketman es antiguo [1]."}
+# La respuesta de desarrollar: un planteamiento de una conjetura y un paso que se sigue de él,
+# uno que sympy no sabe decidir, una conjetura, un dato sin fuente, un paso falso, un paso
+# bueno después, que se queda, una conjetura después, que no, y una frase sin cita ni paso.
+DESARROLLO = ("El ketman es la falsificación de preferencias [1]. Conjetura: hay unas 4.321 mentiras [P: m = 4321]. "
+              "Las mentiras se duplican [D: 2*m = 8642]. Una desigualdad entre variables [D: x < y]. "
+              "Conjetura: el ketman es antiguo. Un dato inventado [1] [P: k = 1987]. "
+              "Un paso falso [D: (a+b)**2 = a**2 + b**2]. Lo que se deduce de él [D: 3*3 = 9]. "
+              "Conjetura: el ketman se aprende. Una frase suelta.")
 
 
 class FalsoOllama(http.server.BaseHTTPRequestHandler):
@@ -148,7 +156,8 @@ class FalsoOllama(http.server.BaseHTTPRequestHandler):
             elif modelo == "mentiroso":
                 texto = "Una afirmación [99].\n\nUn párrafo sin cita."
             else:
-                texto = "El ketman es la falsificación de preferencias [1]." + EXTRAS.get(modelo, "")
+                texto = DESARROLLO if "Cuatro clases de frase" in sistema else \
+                    "El ketman es la falsificación de preferencias [1]." + EXTRAS.get(modelo, "")
                 if m := re.search(r"^\[(\d+)\] Beta", usuario, re.M):
                     texto += f"\n\nContrapeso: Beta, del área secundaria, discute a Alfa [{m.group(1)}]."
                 if modelo == "callado":  # cita el área secundaria sin decirlo
@@ -363,6 +372,62 @@ def main():
         if aviso:
             assert f"Aviso: {aviso}" in salida, salida
         assert respuesta.startswith("El ketman es la falsificación de preferencias [1].") and "Contrapeso:" in respuesta, salida
+
+    # desarrollar: los pasos los comprueba sympy. El falso se quita, con lo que se deduce
+    # después; el que no sabe decidir, se avisa; ni los pasos ni las conjeturas pasan por el apoyo.
+    FalsoOllama.charlas = FalsoOllama.apoyos = 0
+    salida = correr("rag.py", "desarrollar", str(d), "ketman", "--responder", "--modelo", "gemma4:26b", *bib, env=con)
+    respuesta = salida.split("\n\nComprobado por sympy")[0]
+    assert respuesta.startswith("El ketman es la falsificación de preferencias [1]. Conjetura: hay unas 4.321 mentiras [P: m = 4321]. "
+                                "Las mentiras se duplican [D: 2*m = 8642]. Una desigualdad entre variables [D: x < y]. "
+                                "Conjetura: el ketman es antiguo. Lo que se deduce de él [D: 3*3 = 9].\n"), salida
+    for quitada in ["«Un dato inventado [1] [P: k = 1987].» (un dato que no está en sus pasajes ni en la pregunta: 1987)",
+                    "«Un paso falso [D: (a+b)**2 = a**2 + b**2].» (un paso que no se sostiene: (a + b)**2 no es a**2 + b**2: con a = ",
+                    "«Conjetura: el ketman se aprende.» (sigue a un paso que no se sostiene)",
+                    "«Una frase suelta.» (ni cita, ni plantea, ni da un paso comprobable, ni empieza por «Conjetura:»)"]:
+        assert f"Aviso: se ha quitado {quitada}" in salida and quitada.split("»")[0][1:] not in respuesta, salida
+    assert "Aviso: paso sin comprobar («<» con variables que los planteamientos no fijan): [D: x < y]." in salida, salida
+    assert "Comprobado por sympy: 2 de 3 pasos [D]; planteamientos [P]: 1." in salida and "Contrapeso:" in respuesta, salida
+    assert FalsoOllama.charlas == 2 and FalsoOllama.apoyos == 2, (FalsoOllama.charlas, FalsoOllama.apoyos)
+
+    # comprobar.py: el álgebra, el redondeo y el cálculo; nada de Python, y lo que no acaba, con plazo.
+    r = subprocess.run(["uv", "run", "--quiet", "--with", "sqlite-vec", "--with", "sympy", "python", "-c",
+                        "import rag; rag.PLAZO = 3; print([rag.paso(e)[0] for e in ['0.2*4000 = 800', 'log(2)/log(1.02) ≈ 35', "
+                        "'1/2 + 1/3 = 5/6 ≈ 0.83', '(a+b)**2 = a**2 + b**2', 'Integral(exp(-x**2), (x, -oo, oo)) = sqrt(pi)', "
+                        "'exp(-2*100*0.1**2) <= 0.1', r'$\\log(e^{-0.02n}) = -0.02n$', \"__import__('os')\", '9**9**9**9 = 1']])"],
+                       capture_output=True, text=True, cwd=AQUI)
+    assert r.stdout.strip() == "['sí', 'sí', 'sí', 'no', 'sí', 'no', 'sí', '?', '?']", r.stdout + r.stderr
+    # Con planteamientos: el paso tiene que seguirse de ellos, y un planteamiento, no contradecirlos.
+    r = subprocess.run(["uv", "run", "--quiet", "--with", "sqlite-vec", "--with", "sympy", "python", "-c",
+                        "import rag; print([rag.paso(*c)[0] for c in [('-0.02*n = log(0.025)', ('2*exp(-2*n*(0.1)**2) = 0.05',)), "
+                        "('S ≈ 331', ('S = (2*Pa)**(1/3)', 'Pa = 47000000')), ('h2 ≈ 0.98', ('rMZ = 0.91', 'rDZ = 0.42', 'h2 = 2*(rMZ - rDZ)')), "
+                        "('h2 = 0.84', ('h2 = 0.91',), True), ('n = N/f', (), True), "
+                        "('n >= 184.4', ('2*exp(-2*n*t**2) <= alpha', 't = 0.1', 'alpha = 0.05')), "
+                        "('n >= 184.856', ('2*exp(-2*n*t**2) <= alpha', 't = 0.1', 'alpha = 0.05'))]])"],
+                       capture_output=True, text=True, cwd=AQUI)
+    assert r.stdout.strip() == "['sí', 'no', 'sí', 'no', 'sí', 'sí', 'no']", r.stdout + r.stderr
+    # Las citas y las etiquetas, en su sitio; y empezar por la abstención no salta las comprobaciones.
+    r = subprocess.run(["uv", "run", "--quiet", "--with", "sqlite-vec", "python", "-c",
+                        "import rag; print(rag.ordenar('Anual [2]. [P: r = 0.02] Se deduce [7, 9]. [D: x = 1] Sustituyendo: [D: 2 = 2] Fin. Es: [D: 3 = 3].')); "
+                        "print(rag.verificar(rag.NO_RESPONDEN + ' Pero en 1987 hubo 4.321 casos [1].', "
+                        "{'1': 'Alfa (2000), p. 1\\nSin cifras.'}, False, False)[0])"],
+                       capture_output=True, text=True, cwd=AQUI)
+    assert r.stdout.splitlines()[0] == "Anual [2] [P: r = 0.02]. Se deduce [7][9] [D: x = 1]. Sustituyendo [D: 2 = 2]. Fin. Es [D: 3 = 3].", r.stdout + r.stderr
+    assert "una cifra que no está en sus pasajes: 1987, 4321" in r.stdout.splitlines()[1], r.stdout + r.stderr
+    # La frase que redondea el resultado de su paso no inventa una cifra; la que lo cambia, sí.
+    # Y una cuenta escrita como [P] no es un planteamiento: no bloquea los pasos de después.
+    r = subprocess.run(["uv", "run", "--quiet", "--with", "sqlite-vec", "--with", "sympy", "python", "-c",
+                        "import rag; p = {'1': 'Alfa (2000), p. 1\\nSin cifras.'}; "
+                        "print([len(rag.verificar(f'Se duplica en unos {n} años [D: 0.693 / 0.02 ≈ 34.65].', p, False, False, True)[0]) for n in (35, 50)]); "
+                        "print(rag.paso('k*2 < 2', ('10/(1 + 1*5) ≈ 1.67', 'k < 1'))[0])"],
+                       capture_output=True, text=True, cwd=AQUI)
+    assert r.stdout.split() == ["[0,", "1]", "sí"], r.stdout + r.stderr
+    # Las cifras de la pregunta las da quien pregunta, y 0,02 es el 2%.
+    r = subprocess.run(["uv", "run", "--quiet", "--with", "sqlite-vec", "python", "-c",
+                        "import rag; print(rag.verificar('Crece a una tasa de 0,02 al año [1].', "
+                        "{'1': 'Alfa (2000), p. 1\\nSin cifras.'}, False, False, pregunta='¿Y al 2%?'))"],
+                       capture_output=True, text=True, cwd=AQUI)
+    assert r.stdout.strip() == "([], [], [])", r.stdout + r.stderr
 
     # El contrapeso inventado, donde no hay ninguno, también es un fallo de forma.
     r = subprocess.run(["uv", "run", "--quiet", "--with", "sqlite-vec", "python", "-c",
