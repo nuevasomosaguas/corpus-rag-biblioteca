@@ -106,6 +106,25 @@ La diferencia entre planteamiento y paso es la que hay entre premisa y deducció
 
 `preguntar` sigue sin resolver ejercicios; `desarrollar`, en cambio, deduce, y no conviene darle el enunciado de un ejercicio que el estudiante tiene que hacer solo.
 
+## Examinar tu afirmación
+
+`examinar` no responde ni corrige: pone a prueba lo que afirmas tú. Le das tu afirmación y, si quieres, tu desarrollo, con planteamientos [P] y pasos [D] como los de `desarrollar`:
+
+```sh
+uv run rag.py examinar ~/biblioteca "Una población que crece al 2% anual se duplica en 50 años [P: r = 0.02] [D: log(2)/r ≈ 50]" --bib ../website/biblioteca.bib --responder --modelo gemma4:12b
+```
+
+Sin `--responder`, da la comprobación de tu desarrollo y los pasajes con los que ponerla a prueba, sin generar nada. Las reglas, y quién las hace cumplir:
+
+1. **Tu desarrollo lo comprueba sympy, sin modelo.** Los pasos que se siguen de tus planteamientos se dicen. Los que no, vuelven como una pregunta con el contraejemplo de sympy, los valores en los que el paso falla, pero sin lo que valen los dos lados ni el resultado bueno: la cuenta la haces tú. Lo que sympy no sabe decidir te pide que lo escribas de forma que se pueda comprobar. *Código.*
+2. **Solo preguntas, de dos a cuatro**, cada una en su línea, numerada y con su cita: «1. ¿…? [3]». La línea que no lo es se quita. *Código.*
+3. **Nunca la respuesta**: ni la definición, ni la solución, ni si tu afirmación es correcta. La pregunta que lleva la respuesta dentro, «¿no es cierto que…?», «¿acaso…?», «¿verdad que…?», se quita. *Código, para esas formas; el resto, el modelo.*
+4. **Cada pregunta, con su pasaje como contraejemplo o caso límite**: un caso que contradice la afirmación, un límite en el que falla, un supuesto que da por hecho o una palabra que usa sin definir. Y pregunta por tu afirmación, no por el pasaje: cada pregunta cita entre «» tus palabras exactas, las que pone a prueba. *El código comprueba que la pregunta cita palabras tuyas, que el pasaje existe y que sus cifras y citas literales están en él o en tu afirmación; no que el pasaje sea el contraejemplo que dice ser, que es del modelo.*
+5. **Solo los pasajes, con las cuatro reglas de la recuperación**: lo secundario va rotulado, y si ningún pasaje queda dentro del umbral, no se llama al modelo. *Código, salvo que el modelo no traiga lo que sabe por su cuenta, que es suyo.*
+6. **Sin elogios ni reproches**, ni sobre la afirmación ni sobre quien la escribe. *El modelo.*
+
+Si algo falla en las reglas 2 a 4, se pide una vez más, y lo que sigue mal se quita, con su aviso.
+
 ## La Trituradora
 
 La tercera capa, privada: obras influyentes y débiles para practicar la crítica y preparar argumentos. No está en la web ni en `biblioteca.bib`, y no comparte índice con la biblioteca, de modo que no penetra en el núcleo ni en el área secundaria: `preguntar` no la abre nunca, el índice de la biblioteca rechaza una obra de la Trituradora aunque se cuele en su bibliografía, y el de la Trituradora rechaza lo que no sea suyo.

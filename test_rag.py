@@ -151,6 +151,16 @@ class FalsoOllama(http.server.BaseHTTPRequestHandler):
             # La Trituradora, con su propia instrucción, y sus pasajes solo con ella.
             assert ("[T1] Omega" in usuario) == ("Los [T] nunca son evidencia" in sistema), (sistema, usuario)
             assert "12. Desconfía del indicador que se premia" in sistema or "[T1]" not in usuario
+            beta = (re.search(r"^\[(\d+)\] Beta", usuario, re.M) or [None, "1"])[1]
+            if "Eres el examinador" in sistema:
+                # Dos preguntas buenas; una introducción, una pregunta que lleva la respuesta, una
+                # cifra que no está en su pasaje, una cita que no existe y una pregunta por el
+                # pasaje que no cita la afirmación, que sobran.
+                texto = (f"Una introducción que sobra.\n1. ¿Sigue valiendo «lo explica todo» cuando el ketman no explica todo? [{beta}]\n"
+                         "2. ¿No es cierto que «el ketman» lo explica todo? [1]\n3. ¿Qué pasó con «el ketman» en 1987? [1]\n"
+                         "4. ¿Dónde se define «ketman»? [99]\n5. ¿Qué supuesto da por hecho «todo»? [1]\n"
+                         "6. ¿Qué dice el pasaje sobre las preferencias? [1]")
+                return self.responder({"message": {"content": texto}, "prompt_eval_count": 100})
             if "[T1]" in usuario:
                 texto = "El argumento: la obra sostiene que nadie miente [T1].\n\nPara triturarlo: 1. ¿Regla 8? [1]"
             elif modelo == "mentiroso":
@@ -428,6 +438,33 @@ def main():
                         "{'1': 'Alfa (2000), p. 1\\nSin cifras.'}, False, False, pregunta='¿Y al 2%?'))"],
                        capture_output=True, text=True, cwd=AQUI)
     assert r.stdout.strip() == "([], [], [])", r.stdout + r.stderr
+
+    # examinar: el desarrollo del estudiante, comprobado por sympy sin modelo, con cada fallo
+    # vuelto pregunta; y las preguntas del modelo, solo las que son preguntas con su cita.
+    FalsoOllama.charlas = 0
+    salida = correr("rag.py", "examinar", str(d), "el ketman lo explica todo [P: a = 2] [D: (a+b)**2 = a**2 + b**2] "
+                    "[D: a*3 = 6] [D: x < y]", "--responder", "--modelo", "gemma4:26b", *bib, env=con)
+    assert salida.startswith("Tu desarrollo, comprobado por sympy:\n  Se siguen de tus planteamientos: [D: a*3 = 6].\n"
+                             "  [D: (a+b)**2 = a**2 + b**2] Con b = 1,7, ¿valen lo mismo los dos lados? Haz la cuenta.\n"
+                             "  [D: x < y] No se puede comprobar («<» con variables que los planteamientos no fijan). "), salida
+    preguntas = salida.split("\n\n")[1]
+    assert re.fullmatch(r"1\. ¿Sigue valiendo «lo explica todo» cuando el ketman no explica todo\? \[\d+\]\n"
+                        r"2\. ¿Qué supuesto da por hecho «todo»\? \[1\]", preguntas), salida
+    assert re.search(r"\n\nDel área secundaria: \[\d+\], contraste y crítica de Alfa \(2000\)\.", salida), salida
+    for quitada in ["«Una introducción que sobra.» (no es una pregunta numerada con su cita al final)",
+                    "«2. ¿No es cierto que «el ketman» lo explica todo? [1]» (lleva la respuesta dentro)",
+                    "«3. ¿Qué pasó con «el ketman» en 1987? [1]» (una cifra que no está en sus pasajes: 1987)",
+                    "«4. ¿Dónde se define «ketman»? [99]» (cita pasajes que no existen: [99])",
+                    "«6. ¿Qué dice el pasaje sobre las preferencias? [1]» (no cita entre «» las palabras de la afirmación que pone a prueba)"]:
+        assert f"Aviso: se ha quitado {quitada}." in salida, salida
+    assert FalsoOllama.charlas == 2, FalsoOllama.charlas
+    r = subprocess.run(["uv", "run", "--quiet", "--with", "sqlite-vec", "python", "-c",
+                        "import rag; print(rag.socratica('no', 'contradice los planteamientos anteriores')); "
+                        "print(rag.socratica('no', 'con n en Interval(184.444, oo), n >= 185.000 no siempre se cumple')); "
+                        "print(rag.socratica('no', '4 no es 5'))"], capture_output=True, text=True, cwd=AQUI)
+    assert r.stdout.splitlines() == ["¿Pueden ser ciertos a la vez este planteamiento y los anteriores?",
+                                     "¿Se cumple para todos los valores de n que permiten tus planteamientos? Busca el más desfavorable.",
+                                     "Haz otra vez la cuenta: ¿te sale lo mismo a los dos lados?"], r.stdout + r.stderr
 
     # El contrapeso inventado, donde no hay ninguno, también es un fallo de forma.
     r = subprocess.run(["uv", "run", "--quiet", "--with", "sqlite-vec", "python", "-c",
